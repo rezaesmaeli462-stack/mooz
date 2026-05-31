@@ -1,0 +1,601 @@
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
+)
+
+# ==================== تنظیمات ====================
+TOKEN = "8298257069:AAEWXbmuInID8BI83mLRa6vfFTUnOHdh0PM"
+ADMIN_ID = 6524459089
+CHANNEL_ID = "@Netmeli_configss"
+CARD_NUMBER = "6219861403968463"
+CARD_NAME = "محمدی مهدی بروجردی"
+
+# ==================== پلن‌ها ====================
+PLANS = [
+    {"name": "1 گیگابایت",        "gb": 1,    "toman": 35000,  "unlimited": False},
+    {"name": "2 گیگابایت",        "gb": 2,    "toman": 70000,  "unlimited": False},
+    {"name": "3 گیگابایت",        "gb": 3,    "toman": 105000, "unlimited": False},
+    {"name": "4 گیگابایت",        "gb": 4,    "toman": 140000, "unlimited": False},
+    {"name": "5 گیگابایت",        "gb": 5,    "toman": 175000, "unlimited": False},
+    {"name": "6 گیگابایت",        "gb": 6,    "toman": 210000, "unlimited": False},
+    {"name": "7 گیگابایت",        "gb": 7,    "toman": 245000, "unlimited": False},
+    {"name": "8 گیگابایت",        "gb": 8,    "toman": 280000, "unlimited": False},
+    {"name": "9 گیگابایت",        "gb": 9,    "toman": 315000, "unlimited": False},
+    {"name": "10 گیگابایت",       "gb": 10,   "toman": 350000, "unlimited": False},
+    {"name": "نامحدود ۱ ماهه",    "gb": -1,   "toman": 450000, "unlimited": True},
+]
+
+# ==================== ذخیره‌سازی موقت ====================
+user_states = {}
+support_map = {}       # message_id ادمین -> user_id
+purchase_counts = {}   # user_id -> تعداد خرید
+user_configs = {}      # user_id -> لیست کانفیگ‌های خریداری شده
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ==================== بررسی عضویت ====================
+async def is_member(context, user_id):
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except:
+        return False
+
+async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not await is_member(context, uid):
+        keyboard = [
+            [InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_ID.lstrip('@')}")],
+            [InlineKeyboardButton("✅ عضو شدم، تأیید کن", callback_data="check_join")],
+        ]
+        text = (
+            "⚠️ برای استفاده از ربات ابتدا باید در کانال ما عضو شوید.\n\n"
+            f"📢 کانال: {CHANNEL_ID}\n\n"
+            "پس از عضویت روی دکمه «عضو شدم» بزنید."
+        )
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.effective_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return False
+    return True
+
+async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if await is_member(context, query.from_user.id):
+        await show_main_menu(update, context)
+    else:
+        await query.answer("❌ هنوز عضو نشدید! لطفاً ابتدا در کانال عضو شوید.", show_alert=True)
+
+# ==================== منوی اصلی ====================
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 خرید کانفیگ", callback_data="buy")],
+        [InlineKeyboardButton("📦 سرویس‌های من", callback_data="my_services")],
+        [InlineKeyboardButton("👤 پروفایل من", callback_data="my_profile")],
+        [InlineKeyboardButton("🎧 پشتیبانی مستقیم", callback_data="support")],
+        [InlineKeyboardButton("📖 راهنما", callback_data="guide")],
+    ])
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 سلام! به ربات فروش کانفیگ خوش آمدید.\n\n"
+        "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
+    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
+    else:
+        await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_membership(update, context):
+        return
+    await show_main_menu(update, context)
+
+async def back_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not await check_membership(update, context):
+        return
+    await show_main_menu(update, context)
+
+# ==================== پروفایل ====================
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    user = query.from_user
+    count = purchase_counts.get(uid, 0)
+    # escape کردن نام کاربر برای جلوگیری از ارور Markdown
+    first_name = user.first_name.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[", "\\[")
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")]]
+    await query.edit_message_text(
+        f"👤 *پروفایل من*\n\n"
+        f"🆔 آیدی عددی: `{uid}`\n"
+        f"👤 نام: {first_name}\n"
+        f"🛍 تعداد خریدها: {count} بار",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+# ==================== سرویس‌های من ====================
+async def my_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    configs = user_configs.get(uid, [])
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")]]
+
+    if not configs:
+        await query.edit_message_text(
+            "📦 *سرویس‌های من*\n\nشما هنوز هیچ سرویسی خریداری نکرده‌اید.",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return
+
+    text = "📦 *سرویس‌های من*\n\n"
+    for i, cfg in enumerate(configs, 1):
+        text += f"*سرویس {i}:*\n{cfg}\n\n"
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ==================== منوی خرید ====================
+async def buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not await check_membership(update, context):
+        return
+    user_states[query.from_user.id] = {"method": "card", "plan_index": 0}
+    await show_plan_selector(query, 0)
+
+def format_toman(amount):
+    return f"{amount:,} تومان"
+
+def plan_description(plan):
+    if plan["unlimited"]:
+        return "👤 ۱ کاربره | ⏱ ۳۰ روزه | ⚡️ سرعت بالا"
+    return "👥 کاربر نامحدود | ⏱ زمان نامحدود | ⚡️ سرعت بالا"
+
+async def show_plan_selector(query, index):
+    plan = PLANS[index]
+    desc = plan_description(plan)
+    price = format_toman(plan["toman"])
+
+    text = (
+        f"📦 *انتخاب حجم کانفیگ*\n\n"
+        f"✅ {desc}\n\n"
+        f"📌 پلن انتخابی: *{plan['name']}*\n"
+        f"💵 قیمت: *{price}*\n\n"
+        f"برای تغییر حجم از دکمه‌های ➕ و ➖ استفاده کنید."
+    )
+
+    # پلن‌های معمولی (بدون نامحدود)
+    normal_plans = [p for p in PLANS if not p["unlimited"]]
+    current_normal_index = next((i for i, p in enumerate(normal_plans) if p["name"] == plan["name"]), None)
+
+    keyboard = []
+
+    if not plan["unlimited"]:
+        keyboard.append([
+            InlineKeyboardButton("➖", callback_data=f"plan_down_{index}"),
+            InlineKeyboardButton(f"{plan['name']}", callback_data="noop"),
+            InlineKeyboardButton("➕", callback_data=f"plan_up_{index}"),
+        ])
+        keyboard.append([InlineKeyboardButton("♾ کانفیگ نامحدود", callback_data=f"plan_select_{len(PLANS)-1}")])
+    else:
+        # نمایش دکمه برگشت به پلن‌های حجمی
+        keyboard.append([InlineKeyboardButton("📦 کانفیگ حجمی", callback_data=f"plan_select_0")])
+
+    keyboard.append([InlineKeyboardButton("✅ تأیید و ادامه", callback_data=f"confirm_plan_{index}")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")])
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def plan_navigate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    data = query.data
+
+    if "plan_select" in data:
+        idx = int(data.split("_")[2])
+    elif "plan_up" in data:
+        current = int(data.split("_")[2])
+        # فقط بین پلن‌های غیر نامحدود جابجا بشه
+        idx = min(current + 1, len(PLANS) - 2)
+    else:  # plan_down
+        current = int(data.split("_")[2])
+        idx = max(current - 1, 0)
+
+    user_states[uid] = {"method": "card", "plan_index": idx}
+    await show_plan_selector(query, idx)
+
+# ==================== تأیید پلن ====================
+async def confirm_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.split("_")[2])
+    plan = PLANS[idx]
+    uid = query.from_user.id
+    user_states[uid] = {"method": "card", "plan_index": idx}
+
+    desc = plan_description(plan)
+    price_text = format_toman(plan["toman"])
+    payment_info = f"💳 شماره کارت: `{CARD_NUMBER}`\n👤 نام: {CARD_NAME}"
+
+    text = (
+        f"📋 *جزئیات سفارش*\n\n"
+        f"📦 پلن: *{plan['name']}*\n"
+        f"✅ {desc}\n"
+        f"💵 مبلغ: *{price_text}*\n\n"
+        f"{payment_info}\n\n"
+        f"پس از پرداخت روی دکمه ارسال رسید بزنید."
+    )
+    keyboard = [
+        [InlineKeyboardButton("📤 ارسال رسید", callback_data=f"send_receipt_{idx}")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="buy")],
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ==================== ارسال رسید ====================
+async def send_receipt_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    idx = int(query.data.split("_")[2])
+    uid = query.from_user.id
+    user_states[uid] = {"method": "card", "plan_index": idx, "waiting_receipt": True}
+
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data=f"confirm_plan_{idx}")]]
+    await query.edit_message_text(
+        "📤 لطفاً عکس رسید پرداخت خود را ارسال کنید:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    state = user_states.get(uid, {})
+    if not state.get("waiting_receipt"):
+        return
+
+    plan = PLANS[state["plan_index"]]
+    price_text = format_toman(plan["toman"])
+    user = update.effective_user
+
+    caption = (
+        f"🛒 *سفارش جدید*\n\n"
+        f"👤 نام: [{user.first_name}](tg://user?id={uid})\n"
+        f"🆔 آیدی عددی: `{uid}`\n"
+        f"📦 پلن: {plan['name']}\n"
+        f"💵 مبلغ: {price_text}\n"
+        f"💳 روش پرداخت: کارت به کارت"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ تأیید سفارش", callback_data=f"approve_{uid}_{state['plan_index']}")],
+        [InlineKeyboardButton("❌ رد سفارش", callback_data=f"reject_{uid}")],
+    ]
+
+    if update.message.photo:
+        await context.bot.send_photo(
+            chat_id=ADMIN_ID,
+            photo=update.message.photo[-1].file_id,
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+    elif update.message.document:
+        await context.bot.send_document(
+            chat_id=ADMIN_ID,
+            document=update.message.document.file_id,
+            caption=caption,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("❌ لطفاً عکس رسید را ارسال کنید.")
+        return
+
+    user_states[uid]["waiting_receipt"] = False
+    keyboard_user = [[InlineKeyboardButton("🏠 منوی اصلی", callback_data="back_main")]]
+    await update.message.reply_text(
+        "✅ رسید شما دریافت شد و در حال بررسی است.\nپس از تأیید، کانفیگ برای شما ارسال می‌شود. 🙏",
+        reply_markup=InlineKeyboardMarkup(keyboard_user)
+    )
+
+# ==================== تأیید / رد سفارش ====================
+async def approve_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("❌ شما ادمین نیستید!", show_alert=True)
+        return
+    await query.answer()
+
+    parts = query.data.split("_")
+    target_uid = int(parts[1])
+    idx = int(parts[2])
+    plan = PLANS[idx]
+
+    user_states[ADMIN_ID] = {"sending_config_to": target_uid, "plan_index": idx}
+    purchase_counts[target_uid] = purchase_counts.get(target_uid, 0) + 1
+
+    try:
+        await query.edit_message_caption(
+            caption=(query.message.caption or "") + "\n\n✅ *تأیید شد - در انتظار ارسال کانفیگ*",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+
+    await context.bot.send_message(
+        chat_id=target_uid,
+        text=(
+            f"✅ *سفارش شما تأیید شد!*\n\n"
+            f"📦 پلن: {plan['name']}\n\n"
+            f"کانفیگ شما به زودی ارسال می‌شود. 🙏"
+        ),
+        parse_mode="Markdown"
+    )
+    await context.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"📤 حالا کانفیگ کاربر `{target_uid}` را ارسال کنید:\n(متن، عکس یا فایل)",
+        parse_mode="Markdown"
+    )
+
+async def reject_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        await query.answer("❌ شما ادمین نیستید!", show_alert=True)
+        return
+    await query.answer()
+
+    parts = query.data.split("_")
+    target_uid = int(parts[1])
+
+    try:
+        await query.edit_message_caption(
+            caption=(query.message.caption or "") + "\n\n❌ *رد شد*",
+            parse_mode="Markdown"
+        )
+    except:
+        pass
+
+    keyboard = [[InlineKeyboardButton("🏠 منوی اصلی", callback_data="back_main")]]
+    await context.bot.send_message(
+        chat_id=target_uid,
+        text="❌ متأسفانه سفارش شما تأیید نشد.\nبرای پیگیری با پشتیبانی تماس بگیرید.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+# ==================== ارسال کانفیگ توسط ادمین ====================
+async def admin_send_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = ADMIN_ID
+    state = user_states.get(uid, {})
+    target = state.get("sending_config_to")
+    if not target:
+        return False
+
+    keyboard = [[InlineKeyboardButton("🏠 منوی اصلی", callback_data="back_main")]]
+    intro = "✅ *کانفیگ شما آماده است:*\n\n"
+    config_text = ""
+
+    if update.message.text:
+        config_text = update.message.text
+        await context.bot.send_message(
+            chat_id=target,
+            text=intro + config_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif update.message.photo:
+        config_text = update.message.caption or "کانفیگ تصویری"
+        await context.bot.send_photo(
+            chat_id=target,
+            photo=update.message.photo[-1].file_id,
+            caption=intro + config_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    elif update.message.document:
+        config_text = update.message.caption or "کانفیگ فایل"
+        await context.bot.send_document(
+            chat_id=target,
+            document=update.message.document.file_id,
+            caption=intro + config_text,
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        return False
+
+    # ذخیره کانفیگ برای «سرویس‌های من»
+    plan = PLANS[state.get("plan_index", 0)]
+    entry = f"📦 {plan['name']}\n🔑 {config_text}"
+    if target not in user_configs:
+        user_configs[target] = []
+    user_configs[target].append(entry)
+
+    user_states[uid].pop("sending_config_to", None)
+    user_states[uid].pop("plan_index", None)
+    await update.message.reply_text(f"✅ کانفیگ با موفقیت برای کاربر `{target}` ارسال شد.", parse_mode="Markdown")
+    return True
+
+# ==================== پشتیبانی ====================
+async def support_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    user_states[uid] = {"waiting_support": True}
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")]]
+    await query.edit_message_text(
+        "🎧 *پشتیبانی مستقیم*\n\nپیام خود را بنویسید. به زودی پاسخ داده می‌شود.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def receive_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = update.effective_user
+    user_states[uid]["waiting_support"] = False
+
+    text = (
+        f"📩 *پیام پشتیبانی*\n\n"
+        f"👤 از: [{user.first_name}](tg://user?id={uid})\n"
+        f"🆔 آیدی: `{uid}`\n\n"
+        f"💬 پیام:\n{update.message.text}"
+    )
+    msg = await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown")
+    support_map[msg.message_id] = uid
+
+    keyboard = [[InlineKeyboardButton("🏠 منوی اصلی", callback_data="back_main")]]
+    await update.message.reply_text("✅ پیام شما ارسال شد. منتظر پاسخ باشید.", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def admin_reply_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    replied_id = update.message.reply_to_message.message_id
+    if replied_id not in support_map:
+        return False
+    target_uid = support_map[replied_id]
+    await context.bot.send_message(
+        chat_id=target_uid,
+        text=f"📨 *پاسخ پشتیبانی:*\n\n{update.message.text}",
+        parse_mode="Markdown"
+    )
+    await update.message.reply_text("✅ پاسخ ارسال شد.")
+    return True
+
+# ==================== راهنما ====================
+async def guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_main")]]
+    text = (
+        "📖 *راهنمای استفاده از ربات*\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🛒 *خرید کانفیگ*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "۱. روی «خرید کانفیگ» بزنید\n"
+        "۲. حجم مورد نظر را با ➕ و ➖ انتخاب کنید\n"
+        "۳. برای خرید نامحدود روی «کانفیگ نامحدود» بزنید\n"
+        "۴. روی «تأیید و ادامه» بزنید\n"
+        "۵. مبلغ را به شماره کارت واریز کنید\n"
+        "۶. عکس رسید را ارسال کنید\n"
+        "۷. پس از تأیید ادمین، کانفیگ برای شما ارسال می‌شود\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💳 *پرداخت کارت به کارت*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "۱. مبلغ را به شماره کارت نمایش داده شده واریز کنید\n"
+        "۲. عکس رسید بانکی را ارسال کنید\n"
+        "۳. منتظر تأیید ادمین بمانید\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📦 *سرویس‌های من*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "پس از خرید، کانفیگ شما در این بخش ذخیره می‌شود و هر زمان می‌توانید مشاهده کنید.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "👤 *پروفایل من*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "آیدی عددی و تعداد خریدهای شما نمایش داده می‌شود.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🎧 *پشتیبانی مستقیم*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "هر سوال یا مشکلی داشتید پیام بدید. تیم پشتیبانی پاسخ می‌دهد.\n\n"
+        "⚠️ *نکات مهم:*\n"
+        "• لطفاً رسید واقعی ارسال کنید\n"
+        "• پس از ارسال رسید تا ۲۴ ساعت منتظر بمانید\n"
+        "• در صورت مشکل با پشتیبانی تماس بگیرید"
+    )
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# ==================== هندلر پیام‌های عمومی ====================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid == ADMIN_ID:
+        state = user_states.get(uid, {})
+        if state.get("sending_config_to"):
+            await admin_send_config(update, context)
+            return
+        if update.message.reply_to_message:
+            if await admin_reply_support(update, context):
+                return
+        return
+
+    state = user_states.get(uid, {})
+    if state.get("waiting_support"):
+        await receive_support_message(update, context)
+    elif state.get("waiting_receipt"):
+        await update.message.reply_text("❌ لطفاً عکس رسید را ارسال کنید.")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid == ADMIN_ID:
+        state = user_states.get(uid, {})
+        if state.get("sending_config_to"):
+            await admin_send_config(update, context)
+            return
+        return
+
+    state = user_states.get(uid, {})
+    if state.get("waiting_receipt"):
+        await receive_receipt(update, context)
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+
+    if uid == ADMIN_ID:
+        state = user_states.get(uid, {})
+        if state.get("sending_config_to"):
+            await admin_send_config(update, context)
+            return
+        return
+
+    state = user_states.get(uid, {})
+    if state.get("waiting_receipt"):
+        await receive_receipt(update, context)
+
+async def noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text(
+        "🔧 *دستورات ادمین:*\n\n"
+        "💬 پاسخ پشتیبانی: روی پیام کاربر **reply** کن\n"
+        "📤 ارسال کانفیگ: بعد از تأیید سفارش، کانفیگ رو مستقیم بفرست",
+        parse_mode="Markdown"
+    )
+
+# ==================== اجرا ====================
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("admin", admin_help))
+
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^check_join$"))
+    app.add_handler(CallbackQueryHandler(buy_menu, pattern="^buy$"))
+    app.add_handler(CallbackQueryHandler(plan_navigate, pattern="^plan_(up|down|select)_"))
+    app.add_handler(CallbackQueryHandler(confirm_plan, pattern="^confirm_plan_"))
+    app.add_handler(CallbackQueryHandler(send_receipt_prompt, pattern="^send_receipt_"))
+    app.add_handler(CallbackQueryHandler(approve_order, pattern="^approve_"))
+    app.add_handler(CallbackQueryHandler(reject_order, pattern="^reject_"))
+    app.add_handler(CallbackQueryHandler(support_menu, pattern="^support$"))
+    app.add_handler(CallbackQueryHandler(guide_menu, pattern="^guide$"))
+    app.add_handler(CallbackQueryHandler(my_profile, pattern="^my_profile$"))
+    app.add_handler(CallbackQueryHandler(my_services, pattern="^my_services$"))
+    app.add_handler(CallbackQueryHandler(back_main, pattern="^back_main$"))
+    app.add_handler(CallbackQueryHandler(noop, pattern="^noop$"))
+
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    print("✅ ربات در حال اجراست...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
